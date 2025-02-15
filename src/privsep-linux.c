@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * Privilege Separation for dhcpcd, Linux driver
- * Copyright (c) 2006-2023 Roy Marples <roy@marples.name>
+ * Copyright (c) 2006-2024 Roy Marples <roy@marples.name>
  * All rights reserved
 
  * Redistribution and use in source and binary forms, with or without
@@ -409,6 +409,9 @@ static struct sock_filter ps_seccomp_filter[] = {
 #ifdef __NR_recvmsg
 	SECCOMP_ALLOW(__NR_recvmsg),
 #endif
+#ifdef __NR_rt_sigprocmask
+	SECCOMP_ALLOW(__NR_rt_sigprocmask),
+#endif
 #ifdef __NR_rt_sigreturn
 	SECCOMP_ALLOW(__NR_rt_sigreturn),
 #endif
@@ -461,6 +464,30 @@ static struct sock_filter ps_seccomp_filter[] = {
 #endif
 #ifdef __NR_uname
 	SECCOMP_ALLOW(__NR_uname),
+#endif
+
+/* These are for compiling with address sanitization */
+#ifdef ASAN
+#ifdef __NR_futex
+	SECCOMP_ALLOW(__NR_futex),
+#endif
+#ifdef __NR_openat
+	SECCOMP_ALLOW(__NR_openat),
+#endif
+#ifdef __NR_readlink
+	SECCOMP_ALLOW(__NR_readlink),
+#endif
+#ifdef __NR_sigaltstack
+	SECCOMP_ALLOW(__NR_sigaltstack),
+#endif
+
+/* coredumps */
+#ifdef __NR_gettid
+	SECCOMP_ALLOW(__NR_gettid),
+#endif
+#ifdef __NR_tgkill
+	SECCOMP_ALLOW(__NR_tgkill),
+#endif
 #endif
 
 	/* Deny everything else */

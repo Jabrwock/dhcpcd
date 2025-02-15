@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * dhcpcd - DHCP client daemon
- * Copyright (c) 2006-2023 Roy Marples <roy@marples.name>
+ * Copyright (c) 2006-2024 Roy Marples <roy@marples.name>
  * All rights reserved
 
  * Redistribution and use in source and binary forms, with or without
@@ -155,18 +155,6 @@ if_ioctl(struct dhcpcd_ctx *ctx, ioctl_request_t req, void *data, size_t len)
 		return (int)ps_root_ioctl(ctx, req, data, len);
 #endif
 	return ioctl(ctx->pf_inet_fd, req, data, len);
-}
-
-int
-if_getflags(struct interface *ifp)
-{
-	struct ifreq ifr = { .ifr_flags = 0 };
-
-	strlcpy(ifr.ifr_name, ifp->name, sizeof(ifr.ifr_name));
-	if (ioctl(ifp->ctx->pf_inet_fd, SIOCGIFFLAGS, &ifr) == -1)
-		return -1;
-	ifp->flags = (unsigned int)ifr.ifr_flags;
-	return 0;
 }
 
 int

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * Solaris interface driver for dhcpcd
- * Copyright (c) 2016-2023 Roy Marples <roy@marples.name>
+ * Copyright (c) 2016-2024 Roy Marples <roy@marples.name>
  * All rights reserved
 
  * Redistribution and use in source and binary forms, with or without
@@ -205,9 +205,6 @@ if_carrier(struct interface *ifp, __unused const void *ifadata)
 	kstat_named_t		*knp;
 	link_state_t		linkstate;
 
-	if (if_getflags(ifp) == -1)
-		return LINK_UNKNOWN;
-
 	kcp = kstat_open();
 	if (kcp == NULL)
 		goto err;
@@ -226,7 +223,7 @@ if_carrier(struct interface *ifp, __unused const void *ifadata)
 
 	switch (linkstate) {
 	case LINK_STATE_UP:
-		ifp->flags |= IFF_UP;
+		ifp->flags |= IFF_UP; /* XXX Why? */
 		return LINK_UP;
 	case LINK_STATE_DOWN:
 		return LINK_DOWN;
@@ -604,8 +601,8 @@ if_route0(struct dhcpcd_ctx *ctx, struct rtm *rtmsg,
 		else if (!gateway_unspec)
 			rtm->rtm_flags |= RTF_GATEWAY;
 
-		if (rt->rt_dflags & RTDF_STATIC)
-			rtm->rtm_flags |= RTF_STATIC;
+		/* Make static so that in.routed does not delete it */
+		rtm->rtm_flags |= RTF_STATIC;
 
 		if (rt->rt_mtu != 0) {
 			rtm->rtm_inits |= RTV_MTU;
@@ -1745,12 +1742,5 @@ void
 if_setup_inet6(__unused const struct interface *ifp)
 {
 
-}
-
-int
-ip6_forwarding(__unused const char *ifname)
-{
-
-	return 1;
 }
 #endif

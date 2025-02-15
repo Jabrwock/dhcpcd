@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * Linux interface driver for dhcpcd
- * Copyright (c) 2006-2023 Roy Marples <roy@marples.name>
+ * Copyright (c) 2006-2024 Roy Marples <roy@marples.name>
  * All rights reserved
 
  * Redistribution and use in source and binary forms, with or without
@@ -60,9 +60,6 @@
 #include <linux/if_arp.h>
 #endif
 
-/* Inlcude this *after* net/if.h so we get IFF_DORMANT */
-#include <linux/if.h>
-
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -105,6 +102,27 @@ int if_getssid_wext(const char *ifname, uint8_t *ssid);
 /* Buggy CentOS and RedHat */
 #ifndef SOL_NETLINK
 #define	SOL_NETLINK	270
+#endif
+
+/*
+ * We cannot include linux/if.h due to the need to support old kernels.
+ * IFLA_LINKINFO is a define which was added after IFF_LOWER_UP and
+ * IFF_DORMANT.
+ * So we miss a few versions, but it's the best we can do.
+ */
+#ifdef IFLA_LINKINFO
+#ifndef IFF_LOWER_UP
+#define IFF_LOWER_UP	0x10000
+#endif
+#ifndef IFF_DORMANT
+#define IFF_DORMANT	0x20000
+#endif
+#endif
+
+/* Linux defines IFA_FLAGS as an enum.
+ * For older kernels we know it exists if IFA_F_MANAGETEMPADDR does. */
+#ifdef IFA_F_MANAGETEMPADDR
+#define IFA_FLAGS IFA_FLAGS
 #endif
 
 /*
@@ -684,6 +702,27 @@ if_copyrt(struct dhcpcd_ctx *ctx, struct rt *rt, struct nlmsghdr *nlm)
 		case RTA_DST:
 			sa = &rt->rt_dest;
 			break;
+		case RTA_SRC:
+		{
+			union sa_ss ssa;
+			struct sockaddr *psa = (struct sockaddr *)&ssa;
+			socklen_t salen;
+
+			psa->sa_family = rtm->rtm_family;
+			salen = sa_addrlen(psa);
+			memcpy((char *)psa + sa_addroffset(psa),
+			       RTA_DATA(rta), MIN(salen, RTA_PAYLOAD(rta)));
+			/* if ip-route "from" address is not unspecified,
+                           route is source-based, eg:
+                             <dest-net> from <source-net> via ... dev ...
+                           ignore the route as may otherwise appear to overlap
+                           with routes set/removed by dhcpcd */
+			if (!sa_is_unspecified(psa)) {
+				errno = ENOTSUP;
+				return -1;
+			}
+			break;
+		}
 		case RTA_GATEWAY:
 			sa = &rt->rt_gateway;
 			break;
@@ -713,6 +752,34 @@ if_copyrt(struct dhcpcd_ctx *ctx, struct rt *rt, struct nlmsghdr *nlm)
 			}
 			break;
 		}
+#ifdef HAVE_ROUTE_LIFETIME
+		case RTA_CACHEINFO:
+		{
+			struct rta_cacheinfo ci;
+			static long hz;
+
+			if (hz == 0) {
+				hz = sysconf(_SC_CLK_TCK);
+				if (hz == -1)
+					hz = CLOCKS_PER_SEC;
+			}
+
+			memcpy(&ci, RTA_DATA(rta), sizeof(ci));
+			rt->rt_lifetime = (uint32_t)(ci.rta_expires / hz);
+			break;
+		}
+#endif
+#if 0
+		case RTA_EXPIRES:
+			/* Reading the kernel source, this is only
+			 * emitted by IPv4 multicast routes as a UINT64.
+			 * Although we can set it for IPv6 routes as a UINT32,
+			 * the kernel will massage the value to HZ and put it
+			 * into RTA_CACHINFO as read above.
+			 * Gotta love that consistency! */
+			rt->rt_lifetime = (uint32_t)*(uint64_t *)RTA_DATA(rta);
+			break;
+#endif
 		}
 
 		if (sa != NULL) {
@@ -1206,6 +1273,7 @@ add_attr_l(struct nlmsghdr *n, unsigned short maxlen, unsigned short type,
 	return 0;
 }
 
+#if defined(HAVE_ROUTE_PREF) || defined(HAVE_IN6_ADDR_GEN_MODE_NONE)
 static int
 add_attr_8(struct nlmsghdr *n, unsigned short maxlen, unsigned short type,
     uint8_t data)
@@ -1213,6 +1281,7 @@ add_attr_8(struct nlmsghdr *n, unsigned short maxlen, unsigned short type,
 
 	return add_attr_l(n, maxlen, type, &data, sizeof(data));
 }
+#endif
 
 static int
 add_attr_32(struct nlmsghdr *n, unsigned short maxlen, unsigned short type,
@@ -1694,6 +1763,11 @@ if_route(unsigned char cmd, const struct rt *rt)
 	if (!sa_is_loopback(&rt->rt_gateway))
 		add_attr_32(&nlm.hdr, sizeof(nlm), RTA_OIF, rt->rt_ifp->index);
 
+#ifdef HAVE_ROUTE_LIFETIME
+	if (rt->rt_lifetime != 0)
+		add_attr_32(&nlm.hdr, sizeof(nlm), RTA_EXPIRES,rt->rt_lifetime);
+#endif
+
 	if (rt->rt_metric != 0)
 		add_attr_32(&nlm.hdr, sizeof(nlm), RTA_PRIORITY,
 		    rt->rt_metric);
@@ -1768,7 +1842,7 @@ bpf_open(const struct interface *ifp,
 	bpf->bpf_ifp = ifp;
 
 	/* Allocate a suitably large buffer for a single packet. */
-	bpf->bpf_size = ETH_DATA_LEN;
+	bpf->bpf_size = ETH_FRAME_LEN;
 	bpf->bpf_buffer = malloc(bpf->bpf_size);
 	if (bpf->bpf_buffer == NULL)
 		goto eexit;
@@ -1995,7 +2069,7 @@ if_address6(unsigned char cmd, const struct ipv6_addr *ia)
 			nlm.ifa.ifa_flags |= IFA_F_TEMPORARY;
 #endif
 		}
-#elif IFA_F_MANAGETEMPADDR
+#elif defined(IFA_F_MANAGETEMPADDR)
 		if (ia->flags & IPV6_AF_AUTOCONF && IA6_CANAUTOCONF(ia))
 			flags |= IFA_F_MANAGETEMPADDR;
 #endif
@@ -2035,11 +2109,14 @@ _if_addrflags6(__unused struct dhcpcd_ctx *ctx,
 	struct rtattr *rta;
 	struct ifaddrmsg *ifa;
 	struct in6_addr *local = NULL, *address = NULL;
-	uint32_t *flags = NULL;
+	uint32_t flags;
 
 	ifa = NLMSG_DATA(nlm);
 	if (ifa->ifa_index != ia->ifa_ifindex || ifa->ifa_family != AF_INET6)
 		return 0;
+
+	/* Old kernels set flags here, newer ones as attributed data. */
+	flags = ifa->ifa_flags;
 
 	rta = IFA_RTA(ifa);
 	len = NLMSG_PAYLOAD(nlm, sizeof(*ifa));
@@ -2051,9 +2128,11 @@ _if_addrflags6(__unused struct dhcpcd_ctx *ctx,
 		case IFA_LOCAL:
 			local = (struct in6_addr *)RTA_DATA(rta);
 			break;
+#ifdef IFA_F_MANAGETEMPADDR /* IFA_FLAGS is an enum, can't test that */
 		case IFA_FLAGS:
-			flags = (uint32_t *)RTA_DATA(rta);
+			memcpy(&flags, RTA_DATA(rta), sizeof(flags));
 			break;
+#endif
 		}
 	}
 
@@ -2064,8 +2143,8 @@ _if_addrflags6(__unused struct dhcpcd_ctx *ctx,
 	       if (IN6_ARE_ADDR_EQUAL(&ia->ifa_addr, address))
 			ia->ifa_found = true;
 	}
-	if (flags && ia->ifa_found)
-		memcpy(&ia->ifa_flags, flags, sizeof(ia->ifa_flags));
+	if (ia->ifa_found)
+		ia->ifa_flags = flags;
 	return 0;
 }
 
@@ -2238,23 +2317,6 @@ if_applyra(const struct ra *rap)
 	}
 
 	return error;
-}
-
-int
-ip6_forwarding(const char *ifname)
-{
-	char path[256], buf[64];
-	int error, i;
-
-	if (ifname == NULL)
-		ifname = "all";
-	snprintf(path, sizeof(path), "%s/%s/forwarding", p_conf, ifname);
-	if (readfile(path, buf, sizeof(buf)) == -1)
-		return 0;
-	i = (int)strtoi(buf, NULL, 0, INT_MIN, INT_MAX, &error);
-	if (error != 0 && error != ENOTSUP)
-		return 0;
-	return i;
 }
 
 #endif /* INET6 */

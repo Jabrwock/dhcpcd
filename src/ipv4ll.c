@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * dhcpcd - DHCP client daemon
- * Copyright (c) 2006-2023 Roy Marples <roy@marples.name>
+ * Copyright (c) 2006-2024 Roy Marples <roy@marples.name>
  * All rights reserved
 
  * Redistribution and use in source and binary forms, with or without
@@ -175,18 +175,15 @@ ipv4ll_env(FILE *fp, const char *prefix, const struct interface *ifp)
 	return 5;
 }
 
+#ifndef KERNEL_RFC5227
 static void
 ipv4ll_announced_arp(struct arp_state *astate)
 {
 	struct ipv4ll_state *state = IPV4LL_STATE(astate->iface);
 
 	state->conflicts = 0;
-#ifdef KERNEL_RFC5227
-	arp_free(astate);
-#endif
 }
 
-#ifndef KERNEL_RFC5227
 /* This is the callback by ARP freeing */
 static void
 ipv4ll_free_arp(struct arp_state *astate)
@@ -221,7 +218,6 @@ ipv4ll_not_found(struct interface *ifp)
 {
 	struct ipv4ll_state *state;
 	struct ipv4_addr *ia;
-	struct arp_state *astate;
 
 	state = IPV4LL_STATE(ifp);
 	ia = ipv4_iffindaddr(ifp, &state->pickedaddr, &inaddr_llmask);
@@ -265,9 +261,6 @@ ipv4ll_not_found(struct interface *ifp)
 	}
 	rt_build(ifp->ctx, AF_INET);
 
-	astate = arp_announceaddr(ifp->ctx, &ia->addr);
-	if (astate != NULL)
-		astate->announced_cb = ipv4ll_announced_arp;
 	script_runreason(ifp, "IPV4LL");
 	dhcpcd_daemonise(ifp->ctx);
 }
